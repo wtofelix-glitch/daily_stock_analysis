@@ -76,21 +76,49 @@ powershell -ExecutionPolicy Bypass -File scripts\build-all.ps1
   - macOS Intel：`daily-stock-analysis-macos-x64-<tag>.dmg`
   - macOS Apple Silicon：`daily-stock-analysis-macos-arm64-<tag>.dmg`
 
-### macOS 提示“应用已损坏，无法打开”
+### macOS 拦截提示与签名故障排查
 
-当前 macOS DMG 尚未使用 Apple Developer 证书签名和公证。通过浏览器下载后，macOS Gatekeeper 可能因此提示“Daily Stock Analysis 已损坏，无法打开”或“无法验证开发者”；这通常是系统对未签名、未公证应用的拦截，不代表 DMG 文件必然损坏。
+macOS 的几类拦截不能统一按“清除隔离属性”处理：
 
-请按以下顺序排查：
+1. **仅有下载隔离属性**：官方 Release 的已签名、公证应用通过 `spctl` 验证，但 Finder 仍显示首次打开确认。这是正常的 Gatekeeper 下载来源确认，可在“系统设置 -> 隐私与安全性”核对应用名称和开发者后放行。
+2. **未签名或未公证**：`spctl --assess` 返回 rejected，并提示开发者无法验证或缺少公证。此产物不得发布，应使用分发模式重新构建。
+3. **签名链损坏**：`codesign` 返回 `code has no resources but signature indicates they must be present`、`a sealed resource is missing or invalid` 等错误。这说明主应用或内嵌后端/Framework 在签名后被改动，属于发布产物缺陷；清除 `com.apple.quarantine` 不会修复签名，用户不应绕过系统保护。
 
-1. 只从项目的 [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) 下载附件，并确认安装包架构与 Mac 一致：Apple 芯片（M1/M2/M3/M4 等）使用 `daily-stock-analysis-macos-arm64-<tag>.dmg`，Intel 芯片使用 `daily-stock-analysis-macos-x64-<tag>.dmg`。不要对第三方转载或来源不明的安装包绕过 Gatekeeper。
-2. 打开 DMG，将 `Daily Stock Analysis` 拖入“应用程序”后尝试启动一次。若被拦截，进入“系统设置 -> 隐私与安全性”，在安全性提示处确认应用名称，然后点击“仍要打开”，按系统提示再次确认。较旧 macOS 的对应入口为“系统偏好设置 -> 安全性与隐私 -> 通用”。
-3. 仅当安装包确认来自上述官方 Release、且“仍要打开”仍无法放行时，打开“终端”清除该应用的下载隔离属性，然后重新启动：
+用户应只从项目的 [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) 下载附件，并确认架构匹配：Apple 芯片（M1/M2/M3/M4 等）使用 `daily-stock-analysis-macos-arm64-<tag>.dmg`，Intel 芯片使用 `daily-stock-analysis-macos-x64-<tag>.dmg`。若官方 Release 出现第 2 或第 3 类错误，请保留版本号、架构及下面两条命令的完整输出并报告，不要对应用执行 `xattr` 绕过：
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/Daily Stock Analysis.app"
+codesign --verify --deep --strict --verbose=4 "/Applications/Daily Stock Analysis.app"
+spctl --assess --type execute --verbose=4 "/Applications/Daily Stock Analysis.app"
 ```
 
-如果应用不在 `/Applications`，请将命令中的路径替换为实际 `.app` 路径。不要对整个“应用程序”目录执行 `xattr`，也不要对来源不明的应用执行此命令。长期彻底消除该提示需要在发布流程中接入 Apple Developer 签名与 notarization（公证），不属于上述临时放行步骤。
+如果应用不在 `/Applications`，请替换为实际 `.app` 路径。不要对整个“应用程序”目录执行 `xattr`，也不要对来源不明的应用尝试放行。
+
+### macOS 签名、公证与发布校验
+
+`scripts/build-desktop-macos.sh` 将 GitHub Actions 构建视为分发构建；本地可显式设置 `DSA_MAC_DISTRIBUTION=true`。分发构建必须具备以下两组凭据，否则会在 Electron 打包前直接失败，不会留下可发布的 DMG：
+
+- Developer ID Application 证书：通过 `CSC_LINK` / `CSC_KEY_PASSWORD` 提供，或预先安装到构建 keychain。
+- Apple 公证凭据（二选一）：
+  - App Store Connect API Key：`APPLE_API_KEY`、`APPLE_API_KEY_ID`、`APPLE_API_ISSUER`
+  - Apple ID：`APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD`、`APPLE_TEAM_ID`
+
+证书密码和公证凭据只能存放在发布环境的 secret/keychain 中，并由维护者在发布任务中完整注入；任一凭据组只配置部分字段时构建会立即失败。不要把凭据写入仓库文件、命令日志或构建产物。`APPLE_API_KEY` 必须指向构建机上受保护且可读的 `.p8` 临时文件，而不是把私钥正文放进配置。
+
+分发构建按固定顺序执行并在首个失败处停止：
+
+1. PyInstaller 后端生成后检查已有 Mach-O 签名，输出首个失败文件及“PyInstaller packaging”阶段。
+2. Electron 完成嵌套代码签名后，逐个验证 `.app` / `.framework` / `.xpc` bundle 与 Mach-O，再执行 `codesign --verify --deep --strict --verbose=4` 验证完整主应用。
+3. 使用 `notarytool` 公证 DMG，执行 `stapler staple` 与 `stapler validate`。
+4. 只读挂载 DMG，对其中的应用再次执行严格 `codesign` 和 `spctl --assess --type execute --verbose=4`。
+
+x64 与 arm64 由各自 macOS runner 运行同一脚本，因此执行同一套校验；任一架构失败都会阻止发布任务完成。没有 Apple 凭据的本地普通构建仍可用于开发验证，但会明确输出“unsigned local macOS build”，该产物禁止上传 Release。
+
+发布机可使用以下入口完成全链路构建：
+
+```bash
+DSA_MAC_DISTRIBUTION=true DSA_MAC_ARCH=arm64 bash scripts/build-all-macos.sh
+DSA_MAC_DISTRIBUTION=true DSA_MAC_ARCH=x64 bash scripts/build-all-macos.sh
+```
 
 建议发布流程：
 

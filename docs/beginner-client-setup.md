@@ -35,7 +35,7 @@
 
 - Windows 安装包：双击 `.exe`，按提示安装，安装目录用默认位置即可。
 - Windows 免安装包：解压 `.zip`，双击 `Daily Stock Analysis.exe`。
-- macOS：双击 `.dmg`，把应用拖到 `Applications`。如果提示来自未验证开发者，在系统设置的隐私与安全性里允许打开。
+- macOS：双击 `.dmg`，把应用拖到 `Applications`。官方 Release 应通过 Developer ID 签名和 Apple 公证；若系统仍提示未验证开发者、恶意软件或签名损坏，请不要清除隔离属性绕过保护，按[桌面端打包说明](desktop-package.md#macos-拦截提示与签名故障排查)保留校验输出并报告。
 
 macOS 用户升级前建议先在客户端设置里导出一次配置备份。
 

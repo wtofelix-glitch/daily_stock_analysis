@@ -175,6 +175,23 @@ else
   log "WARNING: could not locate packaged static directory under dist/backend/stock_analysis; skipping post-package check."
 fi
 
+log "Checking existing signatures in packaged Mach-O files..."
+while IFS= read -r packaged_file; do
+  if file -b "${packaged_file}" | grep -q "Mach-O"; then
+    signature_details=""
+    if signature_details="$(codesign -d "${packaged_file}" 2>&1)"; then
+      if ! codesign --verify --strict --verbose=4 "${packaged_file}"; then
+        echo "ERROR: first invalid signature immediately after PyInstaller packaging: ${packaged_file}"
+        exit 1
+      fi
+    elif [[ "${signature_details}" != *"code object is not signed at all"* ]]; then
+      echo "ERROR: unreadable signature immediately after PyInstaller packaging: ${packaged_file}"
+      echo "${signature_details}" >&2
+      exit 1
+    fi
+  fi
+done < <(find "${packaged_root}" -type f -print)
+
 log "Verifying packaged built-in strategies..."
 source_strategy_count="$(find "${ROOT_DIR}/strategies" -maxdepth 1 -type f -name '*.yaml' | wc -l | tr -d '[:space:]')"
 packaged_strategies="${ROOT_DIR}/dist/backend/stock_analysis/_internal/strategies"
